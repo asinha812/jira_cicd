@@ -108,32 +108,41 @@ jobs:
         run: echo "image_tag=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
   deploy-prod:
-    runs-on: ubuntu-latest
-    needs: [docker, jiracreation]
-    environment:
-      name: production
-    steps:
-      - name: Wait for Jira Approval
-        env:
-          ISSUE_KEY: ${{ needs.jiracreation.outputs.issue_key }}
-        run: |
-          echo "Waiting for Jira issue: $ISSUE_KEY to be Approved for Prod"
-          for i in {1..30}; do
-            STATUS=$(curl -s -u "$JIRA_AUTH" \
-              -H "Accept: application/json" \
-              "$JIRA_URL/rest/api/3/issue/$ISSUE_KEY" \
-              | jq -r '.fields.status.name')
-            echo "Current Jira Status: $STATUS"
-            if [ "$STATUS" == "Approved for Prod" ]; then
-              echo "✅ Approved!"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "❌ Approval timeout"
-              exit 1
-            fi
-            sleep 30
-          done
+  runs-on: ubuntu-latest
+  needs: [docker, jiracreation]
+  environment:
+    name: production
+  steps:
+    - name: Install dependencies (jq + curl)
+      run: sudo apt-get update && sudo apt-get install -y jq curl
+
+    - name: Wait for "Approved for Prod" in Jira Comments
+      env:
+        JIRA_AUTH: ${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}
+        JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+        ISSUE_KEY: ${{ needs.jiracreation.outputs.issue_key }}
+      run: |
+        echo "Checking Jira issue $ISSUE_KEY for approval comment..."
+        for i in {1..30}; do
+          # Fetch all comments on the Jira issue
+          COMMENTS=$(curl -s -u "$JIRA_AUTH" \
+            -H "Accept: application/json" \
+            "$JIRA_URL/rest/api/3/issue/$ISSUE_KEY/comment" \
+            | jq -r '.comments[].body')
+
+          # Check if any comment contains "Approved for Prod"
+          if echo "$COMMENTS" | grep -q "Approved for Prod"; then
+            echo "✅ Found approval in Jira comments!"
+            exit 0
+          fi
+
+          echo "⏳ Approval not found (attempt $i/30). Waiting 30 seconds..."
+          if [ "$i" -eq 30 ]; then
+            echo "❌ Timeout: No approval comment found after 15 minutes."
+            exit 1
+          fi
+          sleep 30
+        done
 
   update-k8s:
     runs-on: ubuntu-latest
