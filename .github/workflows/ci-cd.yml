@@ -71,6 +71,10 @@ jobs:
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: python scripts/create_jira_issue.py
 
   docker:
@@ -116,27 +120,25 @@ jobs:
       - name: Install dependencies (jq + curl)
         run: sudo apt-get update && sudo apt-get install -y jq curl
 
-      - name: Wait for "Approved for Prod" in Jira Comments
+      - name: Wait for Jira Approval
         env:
           ISSUE_KEY: ${{ needs.jiracreation.outputs.issue_key }}
         run: |
-          echo "Checking Jira issue $ISSUE_KEY for approval comment..."
-          for i in {1..30}; do
-            COMMENTS=$(curl -s -u "$JIRA_AUTH" \
-              -H "Accept: application/json" \
-              "$JIRA_URL/rest/api/3/issue/$ISSUE_KEY/comment" \
-              | jq -r '.comments[].body')
-            if echo "$COMMENTS" | grep -q "Approved for Prod"; then
-              echo "✅ Found approval in Jira comments!"
-              exit 0
-            fi
-            echo "⏳ Approval not found (attempt $i/30). Waiting 30 seconds..."
-            if [ "$i" -eq 30 ]; then
-              echo "❌ Timeout: No approval comment found after 15 minutes."
-              exit 1
-            fi
-            sleep 30
-          done
+          echo "Checking Jira issue $ISSUE_KEY for approval status..."
+          COMMENTS=$(curl -s -u "$JIRA_AUTH" \
+            -H "Accept: application/json" \
+            "$JIRA_URL/rest/api/3/issue/$ISSUE_KEY/comment" \
+            | jq -r '.comments[].body' | tr '[:upper:]' '[:lower:]')
+          if echo "$COMMENTS" | grep -q "approved for prod"; then
+            echo "Deployment approved in Jira."
+            exit 0
+          elif echo "$COMMENTS" | grep -E -q "reject|deny"; then
+            echo "Deployment explicitly rejected in Jira."
+            exit 1
+          else
+            echo "No approval found. Please comment 'Approved for Prod' to proceed or 'Reject' to cancel."
+            exit 1
+          fi
 
   update-k8s:
     runs-on: ubuntu-latest
@@ -168,7 +170,7 @@ jobs:
           curl -s -u "$JIRA_AUTH" \
             -H "Content-Type: application/json" \
             -X POST \
-            --data "{\"body\": \"🚀 Commit \`${{ github.sha }}\` successfully deployed to production.\"}" \
+            --data "{\"body\": \"Commit \`${{ github.sha }}\` successfully deployed to production.\"}" \
             "$JIRA_URL/rest/api/3/issue/${ISSUE_KEY}/comment"
       - name: Transition Jira Issue to Done
         env:
@@ -179,7 +181,7 @@ jobs:
             "$JIRA_URL/rest/api/3/issue/${ISSUE_KEY}/transitions")
           TRANSITION_ID=$(echo "$TRANSITIONS" | jq -r '.transitions[] | select(.name=="Done") | .id')
           if [ -z "$TRANSITION_ID" ]; then
-            echo "❌ Transition 'Done' not found"
+            echo "Transition 'Done' not found"
             exit 1
           fi
           curl -s -u "$JIRA_AUTH" \
@@ -187,4 +189,4 @@ jobs:
             -X POST \
             --data "{\"transition\":{\"id\":\"$TRANSITION_ID\"}}" \
             "$JIRA_URL/rest/api/3/issue/${ISSUE_KEY}/transitions"
-          echo "✅ Transitioned $ISSUE_KEY to Done"
+          echo "Transitioned $ISSUE_KEY to Done"
