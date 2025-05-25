@@ -124,21 +124,23 @@ jobs:
         env:
           ISSUE_KEY: ${{ needs.jiracreation.outputs.issue_key }}
         run: |
-          echo "Checking Jira issue $ISSUE_KEY for approval status..."
-          COMMENTS=$(curl -s -u "$JIRA_AUTH" \
-            -H "Accept: application/json" \
-            "$JIRA_URL/rest/api/3/issue/$ISSUE_KEY/comment" \
-            | jq -r '.comments[].body' | tr '[:upper:]' '[:lower:]')
-          if echo "$COMMENTS" | grep -q "approved for prod"; then
-            echo "Deployment approved in Jira."
-            exit 0
-          elif echo "$COMMENTS" | grep -E -q "reject|deny"; then
-            echo "Deployment explicitly rejected in Jira."
-            exit 1
-          else
-            echo "No approval found. Please comment 'Approved for Prod' to proceed or 'Reject' to cancel."
-            exit 1
-          fi
+          echo "🔄 Waiting for approval or rejection on Jira issue $ISSUE_KEY..."
+          while true; do
+            COMMENTS=$(curl -s -u "$JIRA_AUTH" \
+              -H "Accept: application/json" \
+              "$JIRA_URL/rest/api/3/issue/$ISSUE_KEY/comment" \
+              | jq -r '.comments[].body' | tr '[:upper:]' '[:lower:]')
+            if echo "$COMMENTS" | grep -Eq "(^|[^a-z])(approved|approved for prod|approval for prod)([^a-z]|$)"; then
+              echo "Deployment approved in Jira."
+              break
+            elif echo "$COMMENTS" | grep -Eq "(^|[^a-z])(reject|deny)([^a-z]|$)"; then
+              echo "Deployment explicitly rejected in Jira."
+              exit 1
+            else
+              echo "Still waiting for approval. Next check in 60 seconds..."
+              sleep 60
+            fi
+          done
 
   update-k8s:
     runs-on: ubuntu-latest
@@ -179,7 +181,7 @@ jobs:
           TRANSITIONS=$(curl -s -u "$JIRA_AUTH" \
             -H "Accept: application/json" \
             "$JIRA_URL/rest/api/3/issue/${ISSUE_KEY}/transitions")
-          TRANSITION_ID=$(echo "$TRANSITIONS" | jq -r '.transitions[] | select(.name=="Done") | .id')
+          TRANSITION_ID=$(echo "$TRANSITIONS" | jq -r '.transitions[] | select(.name | ascii_downcase == "done") | .id')
           if [ -z "$TRANSITION_ID" ]; then
             echo "Transition 'Done' not found"
             exit 1
