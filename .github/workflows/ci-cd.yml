@@ -1,4 +1,4 @@
-name: CI/CD Pipeline with Jira Integration
+name: CI/CD Pipeline with TCM Jira Change Management
 
 on:
   push:
@@ -9,10 +9,15 @@ on:
     branches: [main]
 
 env:
-  JIRA_AUTH: ${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}
-  JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+  JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+  JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+  JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+  DOCKER_REGISTRY: ghcr.io
+  DOCKER_USERNAME: ${{ github.actor }}
+  DOCKER_PASSWORD: ${{ secrets.TOKEN }}
 
 jobs:
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -52,36 +57,52 @@ jobs:
           name: build-artifacts
           path: dist/
 
-  jiracreation:
+  create-tcm-ticket:
     runs-on: ubuntu-latest
     needs: build
     outputs:
-      issue_key: ${{ steps.create_jira.outputs.issue_key }}
+      issue_key: ${{ steps.create.outputs.issue_key }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.x'
-      - name: Install Python dependencies
-        run: pip install requests
-      - name: Create Jira Ticket
-        id: create_jira
+      - run: pip install requests
+      - id: vars
+        run: |
+          COMMIT_SHA=${{ github.sha }}
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          COMMIT_AUTHOR=$(git log -1 --pretty=%ae)
+
+          if git diff-tree --no-commit-id --name-only -r $COMMIT_SHA | grep -q '^frontend/'; then
+            SERVICE="Application – Web Front End"
+          else
+            SERVICE="Application – Integration Layer"
+          fi
+
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit_msg<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
+          echo "service=$SERVICE" >> $GITHUB_OUTPUT
+
+      - id: create
         env:
-          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-        run: python scripts/create_jira_issue.py
+          JIRA_USER_EMAIL: ${{ env.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ env.JIRA_API_TOKEN }}
+          JIRA_BASE_URL: ${{ env.JIRA_BASE_URL }}
+          COMMIT_SHA: ${{ steps.vars.outputs.commit_sha }}
+          COMMIT_MSG: ${{ steps.vars.outputs.commit_msg }}
+          COMMIT_AUTHOR: ${{ steps.vars.outputs.commit_author }}
+          AFFECTED_SERVICE: ${{ steps.vars.outputs.service }}
+        run: python scripts/create_tcm_jira_issue.py
 
   docker:
     runs-on: ubuntu-latest
     needs: build
     outputs:
-      image_tag: ${{ steps.set_output.outputs.image_tag }}
+      image_tag: ${{ steps.set.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -91,13 +112,13 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.TOKEN }}
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_PASSWORD }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}
           tags: |
             type=sha,format=long
             type=ref,event=branch
@@ -108,87 +129,55 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      - id: set_output
+      - id: set
         run: echo "image_tag=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
   deploy-prod:
     runs-on: ubuntu-latest
-    needs: [docker, jiracreation]
+    needs: [docker, create-tcm-ticket]
     environment:
       name: production
     steps:
-      - name: Install dependencies (jq + curl)
-        run: sudo apt-get update && sudo apt-get install -y jq curl
-
-      - name: Wait for Jira Approval
-        env:
-          ISSUE_KEY: ${{ needs.jiracreation.outputs.issue_key }}
-        run: |
-          echo "🔄 Waiting for approval or rejection on Jira issue $ISSUE_KEY..."
-          while true; do
-            COMMENTS=$(curl -s -u "$JIRA_AUTH" \
-              -H "Accept: application/json" \
-              "$JIRA_URL/rest/api/3/issue/$ISSUE_KEY/comment" \
-              | jq -r '.comments[].body' | tr '[:upper:]' '[:lower:]')
-            if echo "$COMMENTS" | grep -Eq "(^|[^a-z])(approved|approved for prod|approval for prod)([^a-z]|$)"; then
-              echo "Deployment approved in Jira."
-              break
-            elif echo "$COMMENTS" | grep -Eq "(^|[^a-z])(reject|deny)([^a-z]|$)"; then
-              echo "Deployment explicitly rejected in Jira."
-              exit 1
-            else
-              echo "Still waiting for approval. Next check in 60 seconds..."
-              sleep 60
-            fi
-          done
-
-  update-k8s:
-    runs-on: ubuntu-latest
-    needs: [docker, deploy-prod, jiracreation]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    steps:
       - uses: actions/checkout@v4
-        with:
+        with: 
           token: ${{ secrets.TOKEN }}
-      - run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-      - name: Update Kubernetes deployment file
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      - run: pip install requests
+      - name: Wait for TCM ticket to reach 'Implementing'
+        env:
+          ISSUE_KEY: ${{ needs.create-tcm-ticket.outputs.issue_key }}
+          JIRA_USER_EMAIL: ${{ env.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ env.JIRA_API_TOKEN }}
+          JIRA_BASE_URL: ${{ env.JIRA_BASE_URL }}
+        run: python scripts/wait_until_jira_status.py --issue $ISSUE_KEY --status Implementing
+      - name: Update Kubernetes deployment with new image tag
         env:
           IMAGE_TAG: sha-${{ github.sha }}
         run: |
-          NEW_IMAGE="ghcr.io/${{ github.repository }}:${IMAGE_TAG}"
-          sed -i "s|image: ghcr.io/.*|image: ${NEW_IMAGE}|g" kubernetes/deployment.yaml
-          echo "Updated image to: ${NEW_IMAGE}"
-          grep -A 1 "image:" kubernetes/deployment.yaml
-      - run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          sed -i "s|image: ghcr.io/.*|image: ghcr.io/${{ github.repository }}:${IMAGE_TAG}|g" kubernetes/deployment.yaml
           git add kubernetes/deployment.yaml
-          git commit -m "Update Kubernetes deployment with new image tag: sha-${{ github.sha }} [skip ci]" || echo "No changes to commit"
+          git commit -m "Update K8s deployment: ${IMAGE_TAG} [skip ci]" || echo "No changes"
           git push
       - name: Comment on Jira
-        env:
-          ISSUE_KEY: ${{ needs.jiracreation.outputs.issue_key }}
         run: |
-          curl -s -u "$JIRA_AUTH" \
+          curl -s -u "${{ env.JIRA_USER_EMAIL }}:${{ env.JIRA_API_TOKEN }}" \
             -H "Content-Type: application/json" \
             -X POST \
-            --data "{\"body\": \"Commit \`${{ github.sha }}\` successfully deployed to production.\"}" \
-            "$JIRA_URL/rest/api/3/issue/${ISSUE_KEY}/comment"
-      - name: Transition Jira Issue to Done
-        env:
-          ISSUE_KEY: ${{ needs.jiracreation.outputs.issue_key }}
+            --data "{\"body\": \"✅ Commit \`${{ github.sha }}\` successfully deployed to production.\"}" \
+            "${{ env.JIRA_BASE_URL }}/rest/api/3/issue/${{ needs.create-tcm-ticket.outputs.issue_key }}/comment"
+      - name: Transition Jira ticket to Done
         run: |
-          TRANSITIONS=$(curl -s -u "$JIRA_AUTH" \
+          TRANSITIONS=$(curl -s -u "${{ env.JIRA_USER_EMAIL }}:${{ env.JIRA_API_TOKEN }}" \
             -H "Accept: application/json" \
-            "$JIRA_URL/rest/api/3/issue/${ISSUE_KEY}/transitions")
-          TRANSITION_ID=$(echo "$TRANSITIONS" | jq -r '.transitions[] | select(.name | ascii_downcase == "done") | .id')
-          if [ -z "$TRANSITION_ID" ]; then
-            echo "Transition 'Done' not found"
-            exit 1
-          fi
-          curl -s -u "$JIRA_AUTH" \
+            "${{ env.JIRA_BASE_URL }}/rest/api/3/issue/${{ needs.create-tcm-ticket.outputs.issue_key }}/transitions")
+          ID=$(echo "$TRANSITIONS" | jq -r '.transitions[] | select(.name=="Done") | .id')
+          if [ -z "$ID" ]; then echo "❌ No 'Done' transition found."; exit 1; fi
+          curl -s -u "${{ env.JIRA_USER_EMAIL }}:${{ env.JIRA_API_TOKEN }}" \
             -H "Content-Type: application/json" \
             -X POST \
-            --data "{\"transition\":{\"id\":\"$TRANSITION_ID\"}}" \
-            "$JIRA_URL/rest/api/3/issue/${ISSUE_KEY}/transitions"
-          echo "Transitioned $ISSUE_KEY to Done"
+            --data "{\"transition\":{\"id\":\"$ID\"}}" \
+            "${{ env.JIRA_BASE_URL }}/rest/api/3/issue/${{ needs.create-tcm-ticket.outputs.issue_key }}/transitions"
