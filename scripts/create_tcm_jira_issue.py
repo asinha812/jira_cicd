@@ -17,7 +17,7 @@ AFFECTED_SERVICE = os.environ["AFFECTED_SERVICE"]
 DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 # Jira Service Management API endpoint
-url = f"{JIRA_BASE_URL}/rest/servicedeskapi/request"
+url = f"{JIRA_BASE_URL}/rest/servicedeskapi/servicedesk/145/requesttype"
 
 # Authorization header
 headers = {
