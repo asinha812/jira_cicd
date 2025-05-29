@@ -28,7 +28,7 @@ headers = {
 
 # Request payload (fields must be mapped correctly to request type fields)
 payload = {
-    "serviceDeskId": 145,
+    "serviceDeskId": 11,
     "requestTypeId": 10038,
     "requestFieldValues": {
         "summary": f"[PROD] {COMMIT_SHA[:7]} - {COMMIT_MSG}",
