@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 # Environment variables (from GitHub Actions or secrets)
 JIRA_BASE_URL = os.environ["JIRA_BASE_URL"]
-ACCESS_TOKEN = os.environ["JIRA_API_TOKEN"]
+ACCESS_TOKEN = os.environ["JIRA_ACCESS_TOKEN"]
 # SERVICE_DESK_ID = os.environ["JIRA_SERVICE_DESK_ID"]
 # REQUEST_TYPE_ID = os.environ["JIRA_REQUEST_TYPE_ID"]
 
