@@ -162,22 +162,3 @@ jobs:
           git add kubernetes/deployment.yaml
           git commit -m "Update K8s deployment: ${IMAGE_TAG} [skip ci]" || echo "No changes"
           git push
-      - name: Comment on Jira
-        run: |
-          curl -s -u "${{ env.JIRA_USER_EMAIL }}:${{ env.JIRA_API_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -X POST \
-            --data "{\"body\": \"✅ Commit \`${{ github.sha }}\` successfully deployed to production.\"}" \
-            "${{ env.JIRA_BASE_URL }}/rest/api/3/issue/${{ needs.create-tcm-ticket.outputs.issue_key }}/comment"
-      - name: Transition Jira ticket to Done
-        run: |
-          TRANSITIONS=$(curl -s -u "${{ env.JIRA_USER_EMAIL }}:${{ env.JIRA_API_TOKEN }}" \
-            -H "Accept: application/json" \
-            "${{ env.JIRA_BASE_URL }}/rest/api/3/issue/${{ needs.create-tcm-ticket.outputs.issue_key }}/transitions")
-          ID=$(echo "$TRANSITIONS" | jq -r '.transitions[] | select(.name=="Done") | .id')
-          if [ -z "$ID" ]; then echo "❌ No 'Done' transition found."; exit 1; fi
-          curl -s -u "${{ env.JIRA_USER_EMAIL }}:${{ env.JIRA_API_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -X POST \
-            --data "{\"transition\":{\"id\":\"$ID\"}}" \
-            "${{ env.JIRA_BASE_URL }}/rest/api/3/issue/${{ needs.create-tcm-ticket.outputs.issue_key }}/transitions"
