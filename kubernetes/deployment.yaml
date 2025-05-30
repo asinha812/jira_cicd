@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: tic-tac-toe
-        image: ghcr.io/asinha812/jira_cicd:sha-282637f703593e86e412865b195ced63a89d97c1
+        image: ghcr.io/asinha812/jira_cicd:sha-d536c5e473ede50c89b4cf67faf7c829adbbfa87
         # Image will be automatically updated by CI/CD pipeline
         imagePullPolicy: Always
         ports:
