@@ -1,65 +1,61 @@
 import os
 import json
 import requests
-from datetime import datetime, timezone
+from base64 import b64encode
 
-# Environment variables (from GitHub Actions or secrets)
+JIRA_USER_EMAIL = os.environ["JIRA_USER_EMAIL"]
+JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 JIRA_BASE_URL = os.environ["JIRA_BASE_URL"]
-ACCESS_TOKEN = os.environ["JIRA_ACCESS_TOKEN"]
-# SERVICE_DESK_ID = os.environ["JIRA_SERVICE_DESK_ID"]
-# REQUEST_TYPE_ID = os.environ["JIRA_REQUEST_TYPE_ID"]
-
 COMMIT_SHA = os.environ["COMMIT_SHA"]
 COMMIT_MSG = os.environ["COMMIT_MSG"]
 COMMIT_AUTHOR = os.environ["COMMIT_AUTHOR"]
 AFFECTED_SERVICE = os.environ["AFFECTED_SERVICE"]
 
-DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+# Jira IDs for dropdowns
+FIELDS = {
+    "serviceDeskId": "11",
+    "requestTypeId": "162",
+    "changeType": "10005",      # Normal
+    "urgency": "10009",         # Medium
+    "risk": "10012",            # Upgrade
+    "impact": "10001",          # Significant / Large
+    "affectedService": "ari:cloud:graph::service/19f11163-c04c-434c-99a6-431be0298091/8a5f384c-7580-11ef-980f-1201f16ed41f"
+}
 
-# Jira Service Management API endpoint
-url = f"{JIRA_BASE_URL}/rest/servicedeskapi/servicedesk/11/requesttype"
+payload = {
+    "serviceDeskId": FIELDS["serviceDeskId"],
+    "requestTypeId": FIELDS["requestTypeId"],
+    "requestFieldValues": {
+        "summary": f"CI/CD Deployment Request - {COMMIT_SHA[:7]}",
+        "description": f"Commit: {COMMIT_SHA}\nMessage: {COMMIT_MSG}\nAuthor: {COMMIT_AUTHOR}",
+        "customfield_10005": {"id": FIELDS["changeType"]},
+        "customfield_10006": {"id": FIELDS["urgency"]},
+        "customfield_10007": {"id": FIELDS["risk"]},
+        "customfield_10004": {"id": FIELDS["impact"]},
+        "customfield_10043": [{"id": FIELDS["affectedService"]}],
+        "customfield_10054": "Automated implementation plan via CI/CD pipeline.",
+        "customfield_10055": "Standard backout procedure applies.",
+        "customfield_10056": "Deployment validated by automated tests."
+    }
+}
 
-# Authorization header
-headers = {
-    "Authorization": f"Bearer {ACCESS_TOKEN}",
+auth = b64encode(f"{JIRA_USER_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
+headers = { 
+    "Authorization": f"Basic {auth}",
     "Content-Type": "application/json",
     "Accept": "application/json"
 }
 
-# Request payload (fields must be mapped correctly to request type fields)
-payload = {
-    "serviceDeskId": 11,
-    "requestTypeId": 10038,
-    "requestFieldValues": {
-        "summary": f"[PROD] {COMMIT_SHA[:7]} - {COMMIT_MSG}",
-        "description": (
-            f"Commit: {COMMIT_SHA}\n"
-            f"Author: {COMMIT_AUTHOR}\n"
-            f"Affected Service: {AFFECTED_SERVICE}\n\n"
-            f"Implementation Plan: The image is released into the production environment\n"
-            f"Backout Plan: There is a roll back to the prior image\n"
-            f"Test Plan: Business verification to be carried out after deployment\n\n"
-            f"Requested: {DATE}"
-        )
-    },
-    "raiseOnBehalfOf": COMMIT_AUTHOR
-}
+url = f"{JIRA_BASE_URL}/rest/servicedeskapi/request"
+response = requests.post(url, headers=headers, json=payload)
 
-# API call to create the request
-response = requests.post(url, headers=headers, data=json.dumps(payload))
-
-# Check result
-if response.status_code in [200, 201]:
-    issue_key = response.json().get("issueKey")
-    print(f"✅ Created JSM request: {issue_key}")
-    
-    # Export key to GitHub Actions
-    github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output:
-        with open(github_output, "a") as f:
-            f.write(f"issue_key={issue_key}\n")
+if response.status_code == 201:
+    issue_key = response.json()["issueKey"]
+    print(f"✅ Created Jira ticket: {issue_key}")
+    # Set GitHub Action output
+    print(f"::set-output name=issue_key::{issue_key}")
 else:
-    print(f"❌ Jira Service Management request failed")
-    print(f"Status code: {response.status_code}")
+    print("❌ Failed to create Jira ticket")
+    print(response.status_code)
     print(response.text)
     exit(1)
